@@ -14,11 +14,17 @@ targets:
     type: application
     platform: macOS
     sources:
-      - path: Coheremote
+      - path: .
         excludes:
           - "*.md"
           - "LICENSE"
           - ".DS_Store"
+          - ".github"
+          - ".git"
+          - ".gitignore"
+          - "build"
+          - "project.yml"
+          - "WrapperTemplate.txt"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: y-128.Coheremote
