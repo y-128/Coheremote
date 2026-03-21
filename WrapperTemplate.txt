@@ -1,0 +1,397 @@
+import Cocoa
+import Security
+
+// === Configuration ===
+let APP_NAME = "{{APP_NAME}}"
+let VMX_PATH = "{{VMX_PATH}}"
+let VMRUN_PATH = "/Applications/VMware Fusion.app/Contents/Public/vmrun"
+let KEYCHAIN_SERVICE = "{{KEYCHAIN_SERVICE}}"
+let CLOSE_ON_EXIT = {{CLOSE_ON_EXIT}}
+let SHUTDOWN_ON_EXIT = {{SHUTDOWN_ON_EXIT}}
+let LOG_NAME = "{{LOG_NAME}}"
+
+// === Localization ===
+let isJapanese: Bool = Locale.preferredLanguages.first?.hasPrefix("ja") == true
+
+func L(_ en: String, _ ja: String) -> String {
+    isJapanese ? ja : en
+}
+
+// === Shell Helper ===
+func shell(_ path: String, _ args: [String]) -> (Int32, String) {
+    let proc = Process()
+    let pipe = Pipe()
+    proc.executableURL = URL(fileURLWithPath: path)
+    proc.arguments = args
+    proc.standardOutput = pipe
+    proc.standardError = pipe
+    var env = ProcessInfo.processInfo.environment
+    env["LANG"] = "ja_JP.UTF-8"
+    proc.environment = env
+    do { try proc.run() } catch { return (-1, "launch error: \(error)") }
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    proc.waitUntilExit()
+    return (proc.terminationStatus, String(data: data, encoding: .utf8) ?? "")
+}
+
+// === Application ===
+class WrapperApp: NSObject, NSApplicationDelegate {
+    var window: NSWindow!
+    var label: NSTextField!
+    var spinner: NSProgressIndicator!
+    var encPassword = ""
+    var connected = false
+    var logHandle: FileHandle?
+
+    var rdpPath: String {
+        Bundle.main.resourcePath! + "/app.rdp"
+    }
+
+    // MARK: - Logging
+
+    func setupLog() {
+        let logDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/Coheremote")
+        try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
+        let logPath = logDir.appendingPathComponent("\(LOG_NAME).log")
+
+        if let attr = try? FileManager.default.attributesOfItem(atPath: logPath.path),
+           let size = attr[.size] as? Int, size > 1_048_576 {
+            let oldPath = logDir.appendingPathComponent("\(LOG_NAME).log.old")
+            try? FileManager.default.removeItem(at: oldPath)
+            try? FileManager.default.moveItem(at: logPath, to: oldPath)
+        }
+
+        FileManager.default.createFile(atPath: logPath.path, contents: nil)
+        logHandle = FileHandle(forWritingAtPath: logPath.path)
+        logHandle?.seekToEndOfFile()
+    }
+
+    func log(_ msg: String) {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        let line = "[\(f.string(from: Date()))] \(msg)\n"
+        logHandle?.write(line.data(using: .utf8) ?? Data())
+    }
+
+    func status(_ text: String) {
+        log("[STATUS] \(text)")
+        DispatchQueue.main.async { self.label?.stringValue = text }
+    }
+
+    // MARK: - Keychain
+
+    func loadPassword() {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: KEYCHAIN_SERVICE,
+            kSecAttrAccount as String: "vmEncryption",
+            kSecReturnData as String: true
+        ]
+        var item: CFTypeRef?
+        if SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+           let data = item as? Data,
+           let pw = String(data: data, encoding: .utf8) {
+            encPassword = pw
+        }
+    }
+
+    // MARK: - vmrun
+
+    func vmrun(_ cmd: String, _ extraArgs: [String] = []) -> (Int32, String) {
+        var args = ["-T", "fusion"]
+        if !encPassword.isEmpty { args += ["-vp", encPassword] }
+        args.append(cmd)
+        args += extraArgs
+        return shell(VMRUN_PATH, args)
+    }
+
+    func vmIsRunning() -> Bool {
+        shell(VMRUN_PATH, ["list"]).1.contains(VMX_PATH)
+    }
+
+    // MARK: - VM Workflow
+
+    func ensureFusion() {
+        let running = NSWorkspace.shared.runningApplications.contains {
+            $0.bundleIdentifier == "com.vmware.fusion"
+        }
+        if !running {
+            status(L("Launching VMware Fusion...", "VMware Fusionを起動中..."))
+            let _ = shell("/usr/bin/open", ["-g", "-a", "VMware Fusion"])
+            for _ in 0..<15 {
+                if shell(VMRUN_PATH, ["list"]).0 == 0 { break }
+                Thread.sleep(forTimeInterval: 1)
+            }
+        }
+    }
+
+    func startVM() {
+        if vmIsRunning() {
+            log("[VM] Already running")
+            return
+        }
+        status(L("Starting VM...", "VMを起動中..."))
+        log("[VM] Opening VM with VMware Fusion")
+        let _ = shell("/usr/bin/open", ["-a", "VMware Fusion", VMX_PATH])
+    }
+
+    func waitForVM() -> Bool {
+        let timeout: TimeInterval = 120
+        let start = Date()
+        while Date().timeIntervalSince(start) < timeout {
+            if vmIsRunning() {
+                log("[VM] VM detected as running")
+                Thread.sleep(forTimeInterval: 5)
+                return true
+            }
+            Thread.sleep(forTimeInterval: 1)
+        }
+        log("[ERROR] VM start timed out")
+        return false
+    }
+
+    func openRDP() {
+        let app = FileManager.default.fileExists(atPath: "/Applications/Windows App.app")
+            ? "Windows App" : "Microsoft Remote Desktop"
+        log("[RDP] Opening with: \(app)")
+        let _ = shell("/usr/bin/open", ["-a", app, rdpPath])
+    }
+
+    // MARK: - UI
+
+    func setupWindow() {
+        window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 80),
+            styleMask: [.titled, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = APP_NAME
+        window.center()
+        window.isReleasedWhenClosed = false
+
+        label = NSTextField(labelWithString: "")
+        label.frame = NSRect(x: 20, y: 40, width: 260, height: 20)
+        label.alignment = .center
+        window.contentView!.addSubview(label)
+
+        spinner = NSProgressIndicator(frame: NSRect(x: 20, y: 10, width: 260, height: 20))
+        spinner.style = .bar
+        spinner.isIndeterminate = true
+        spinner.startAnimation(nil)
+        window.contentView!.addSubview(spinner)
+
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    func setupMenu() {
+        let menuBar = NSMenu()
+        let appMenuItem = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenu.addItem(
+            withTitle: L("Quit \(APP_NAME)", "\(APP_NAME) を終了"),
+            action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: "q"
+        )
+        appMenuItem.submenu = appMenu
+        menuBar.addItem(appMenuItem)
+        NSApp.mainMenu = menuBar
+    }
+
+    func showWindow() {
+        DispatchQueue.main.async {
+            self.spinner?.startAnimation(nil)
+            self.window?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    func hideWindow() {
+        DispatchQueue.main.async {
+            self.spinner?.stopAnimation(nil)
+            self.window?.orderOut(nil)
+        }
+    }
+
+    // MARK: - NSApplicationDelegate
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        setupLog()
+        log("========================================")
+        log("=== \(APP_NAME) wrapper starting ===")
+        log("========================================")
+        setupMenu()
+        setupWindow()
+        loadPassword()
+
+        DispatchQueue.global().async {
+            self.ensureFusion()
+            self.startVM()
+
+            self.status(L("Waiting for VM...", "VMの起動を待機中..."))
+            guard self.waitForVM() else {
+                self.status(L("VM start failed", "VMの起動に失敗"))
+                return
+            }
+
+            self.status(L("Connecting...", "接続中..."))
+            self.openRDP()
+
+            Thread.sleep(forTimeInterval: 2)
+            self.hideWindow()
+            self.connected = true
+        }
+    }
+
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        let menu = NSMenu()
+        if connected {
+            let reconnectItem = NSMenuItem(
+                title: L("Reconnect", "再接続"),
+                action: #selector(doReconnect),
+                keyEquivalent: ""
+            )
+            reconnectItem.target = self
+            menu.addItem(reconnectItem)
+
+            menu.addItem(NSMenuItem.separator())
+
+            let restartItem = NSMenuItem(
+                title: L("Restart Windows", "Windowsを再起動"),
+                action: #selector(doRestart),
+                keyEquivalent: ""
+            )
+            restartItem.target = self
+            menu.addItem(restartItem)
+
+            let shutdownItem = NSMenuItem(
+                title: L("Shutdown and Quit", "シャットダウンして終了"),
+                action: #selector(doShutdownAndQuit),
+                keyEquivalent: ""
+            )
+            shutdownItem.target = self
+            menu.addItem(shutdownItem)
+        }
+        return menu
+    }
+
+    @objc func doReconnect() {
+        log("[RDP] Reconnecting...")
+        openRDP()
+    }
+
+    @objc func doRestart() {
+        guard connected else { return }
+        connected = false
+        showWindow()
+
+        DispatchQueue.global().async {
+            self.status(L("Restarting Windows...", "Windowsを再起動中..."))
+            let (code, output) = self.vmrun("reset", [VMX_PATH, "soft"])
+            self.log("[VM] vmrun reset: exit=\(code) output=\(output)")
+
+            if code != 0 {
+                self.status(L("Restart command failed", "再起動コマンド失敗"))
+                self.log("[ERROR] vmrun reset failed")
+                Thread.sleep(forTimeInterval: 3)
+                self.hideWindow()
+                self.connected = true
+                return
+            }
+
+            Thread.sleep(forTimeInterval: 15)
+            self.status(L("Waiting for Windows...", "Windowsの起動を待機中..."))
+
+            guard self.waitForVM() else {
+                self.status(L("Restart timed out", "再起動がタイムアウト"))
+                return
+            }
+
+            self.status(L("Connecting...", "接続中..."))
+            self.openRDP()
+
+            Thread.sleep(forTimeInterval: 2)
+            self.hideWindow()
+            self.connected = true
+        }
+    }
+
+    @objc func doShutdownAndQuit() {
+        guard connected else { return }
+        connected = false
+        showWindow()
+
+        DispatchQueue.global().async {
+            self.status(L("Shutting down Windows...", "Windowsをシャットダウン中..."))
+            let (code, output) = self.vmrun("stop", [VMX_PATH, "soft"])
+            self.log("[VM] vmrun stop soft: exit=\(code) output=\(output)")
+
+            if code != 0 {
+                self.status(L("Shutdown failed, forcing stop...", "シャットダウン失敗、強制停止中..."))
+                let (code2, output2) = self.vmrun("stop", [VMX_PATH, "hard"])
+                self.log("[VM] vmrun stop hard: exit=\(code2) output=\(output2)")
+            }
+
+            self.log("=== Shutdown complete, quitting ===")
+            DispatchQueue.main.async {
+                NSApp.terminate(nil)
+            }
+        }
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard vmIsRunning() else {
+            log("=== Goodbye ===")
+            return .terminateNow
+        }
+
+        if SHUTDOWN_ON_EXIT {
+            showWindow()
+            DispatchQueue.global().async {
+                self.status(L("Shutting down Windows...", "Windowsをシャットダウン中..."))
+                let (code, output) = self.vmrun("stop", [VMX_PATH, "soft"])
+                self.log("[CLEANUP] vmrun stop soft: exit=\(code) output=\(output)")
+                if code != 0 {
+                    self.status(L("Shutdown failed, forcing stop...", "シャットダウン失敗、強制停止中..."))
+                    let (code2, output2) = self.vmrun("stop", [VMX_PATH, "hard"])
+                    self.log("[CLEANUP] vmrun stop hard: exit=\(code2) output=\(output2)")
+                }
+                self.log("=== Goodbye ===")
+                DispatchQueue.main.async {
+                    NSApp.reply(toApplicationShouldTerminate: true)
+                }
+            }
+            return .terminateLater
+        }
+
+        if CLOSE_ON_EXIT {
+            showWindow()
+            DispatchQueue.global().async {
+                self.status(L("Suspending VM...", "VMをサスペンド中..."))
+                let (code, output) = self.vmrun("suspend", [VMX_PATH])
+                self.log("[CLEANUP] vmrun suspend: exit=\(code) output=\(output)")
+                self.log("=== Goodbye ===")
+                DispatchQueue.main.async {
+                    NSApp.reply(toApplicationShouldTerminate: true)
+                }
+            }
+            return .terminateLater
+        }
+
+        log("=== Goodbye ===")
+        return .terminateNow
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        return false
+    }
+}
+
+// === Entry Point ===
+let app = NSApplication.shared
+app.setActivationPolicy(.regular)
+let delegate = WrapperApp()
+app.delegate = delegate
+NSApp.activate(ignoringOtherApps: true)
+app.run()

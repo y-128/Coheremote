@@ -1,0 +1,37 @@
+name: Coheremote
+
+options:
+  bundleIdPrefix: y-128
+  deploymentTarget:
+    macOS: "14.0"
+
+settings:
+  base:
+    DEVELOPMENT_TEAM: 8JSP495B8T
+
+targets:
+  Coheremote:
+    type: application
+    platform: macOS
+    sources:
+      - path: Coheremote
+        excludes:
+          - "*.md"
+          - "LICENSE"
+          - ".DS_Store"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: y-128.Coheremote
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: 1
+        ENABLE_APP_SANDBOX: false
+        ENABLE_HARDENED_RUNTIME: true
+        ENABLE_USER_SELECTED_FILES: readwrite
+        GENERATE_INFOPLIST_FILE: true
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        SWIFT_APPROACHABLE_CONCURRENCY: true
+        SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+        SWIFT_EMIT_LOC_STRINGS: true
+        SWIFT_VERSION: "5.0"

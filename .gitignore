@@ -1,0 +1,17 @@
+# macOS
+.DS_Store
+
+# Xcode
+## Build generated
+build/
+DerivedData/
+*.xcodeproj/
+
+## User-specific
+xcuserdata/
+*.xcuserdatad
+*.xcworkspace
+.swiftpm/
+.claude/
+
+Description*.md

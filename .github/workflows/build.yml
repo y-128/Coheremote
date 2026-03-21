@@ -1,0 +1,47 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - '[0-9]*.[0-9]*.[0-9]*'
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install XcodeGen
+      run: brew install xcodegen
+
+    - name: Generate Xcode project
+      run: xcodegen generate
+
+    - name: Extract version from tag
+      id: version
+      run: echo "VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+    - name: Build
+      run: |
+        xcodebuild -project Coheremote.xcodeproj \
+          -scheme Coheremote \
+          -configuration Release \
+          -derivedDataPath build \
+          MARKETING_VERSION=${{ steps.version.outputs.VERSION }} \
+          CODE_SIGN_IDENTITY="-" \
+          CODE_SIGNING_REQUIRED=NO \
+          CODE_SIGNING_ALLOWED=NO
+
+    - name: Package app
+      run: |
+        APP_PATH=$(find build -name "Coheremote.app" -type d | head -1)
+        ditto -c -k --keepParent "$APP_PATH" "Coheremote-v${{ steps.version.outputs.VERSION }}.zip"
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v2
+      with:
+        name: "v${{ steps.version.outputs.VERSION }}"
+        files: "Coheremote-v${{ steps.version.outputs.VERSION }}.zip"
+        generate_release_notes: true

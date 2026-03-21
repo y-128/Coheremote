@@ -1,0 +1,65 @@
+MIT License
+
+Copyright (c) 2026 y-128
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+THIRD-PARTY SOFTWARE LICENSES
+
+This project acknowledges and is influenced by the following technologies:
+
+1. Swift and SwiftUI
+   - Copyright (c) Apple Inc.
+   - Licensed under Apache License 2.0
+
+2. Python (Design Influence)
+   - Copyright (c) Python Software Foundation
+   - Licensed under Python Software Foundation License
+   - https://docs.python.org/3/license.html
+
+3. PyQt6 (Design Influence)
+   - Copyright (c) Riverbank Computing Limited
+   - Licensed under GNU General Public License v3
+   - https://www.riverbankcomputing.com/software/pyqt/
+
+4. PyObjC (Design Influence)
+   - Copyright (c) PyObjC Contributors
+   - Licensed under MIT License
+   - https://github.com/ronaldoussoren/pyobjc
+
+---
+
+IMPORTANT NOTES
+
+This software is designed to work with:
+- VMware Fusion (VMware, Inc.)
+- Windows App (formerly Microsoft Remote Desktop) (Microsoft Corporation)
+- Microsoft Windows (Microsoft Corporation)
+
+Users must comply with all applicable licenses and terms of service for these
+third-party products. This software does not include, bundle, or distribute
+any third-party software. It merely facilitates the use of separately licensed
+software that must be obtained and licensed independently by the user.
+
+The generated wrapper applications are intended for personal use only. For
+commercial use, please ensure you have appropriate licenses for all software
+involved, including but not limited to VMware Fusion, Microsoft Windows, and
+Windows App (Microsoft Remote Desktop).

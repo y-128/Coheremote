@@ -1,0 +1,4 @@
+/* English localization for Info.plist */
+CFBundleDisplayName = "Coheremote";
+CFBundleName = "Coheremote";
+NSHumanReadableCopyright = "";
