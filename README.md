@@ -1,6 +1,7 @@
 # Coheremote
 
 CoheremoteはVMware Fusion上で動作するWindowsアプリケーションを、macOSのネイティブアプリのようにDockに統合するラッパーアプリ生成ツールです。RemoteApp（RDP）技術を使用して、シームレスな操作体験を提供します。
+こちらのXの[ポスト](https://x.com/amania_jp/status/2034160595105403123?s=12)からインスピレーションを受けました。
 
 ## 主な機能
 
