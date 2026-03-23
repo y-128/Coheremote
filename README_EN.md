@@ -1,6 +1,6 @@
 # Coheremote
 
-Coheremote is a macOS application that generates native wrapper apps for Windows applications running in VMware Fusion VMs. Using RemoteApp (RDP) technology, it integrates Windows apps into the macOS Dock as if they were native applications.
+Coheremote is a macOS application that generates native wrapper apps for Windows applications running in VMware Fusion VMs. Using RemoteApp (RDP) technology, it integrates Windows apps into the macOS Dock as if they were native applications.I was inspired by this X [post](https://x.com/amania_jp/status/2034160595105403123?s=12).
 
 ## Features
 
