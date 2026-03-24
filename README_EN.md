@@ -11,7 +11,8 @@ Coheremote is a macOS application that generates native wrapper apps for Windows
 - **Auto VM Suspend**: Automatically suspends the VM when the wrapper app quits (configurable)
 - **Smart VM Startup**: Detects VM state instantly; connects immediately if already running
 - **Encrypted VM Support**: Handles encrypted VMs with password stored securely in macOS Keychain
-- **Auto-Login**: Username injection into RDP files for streamlined authentication
+- **App Launcher**: A launcher panel in the macOS menu bar. Launch installed Windows apps, power controls, and switch between other wrapper apps
+- **App Visibility**: Hide unwanted apps from the App Launcher list (settings are persisted)
 - **Custom Icons**: Supports PNG, JPG, ICO, and ICNS formats for app icons
 - **Multi-language UI**: English and Japanese
 - **Configuration Persistence**: Settings are saved automatically for quick regeneration
@@ -21,7 +22,9 @@ Coheremote is a macOS application that generates native wrapper apps for Windows
 - **macOS 13.0** (Ventura) or later
 - **VMware Fusion**: Installed in `/Applications/VMware Fusion.app`
 - **Windows App** (or Microsoft Remote Desktop): Installed from the Mac App Store
-- **RemoteApp Tool**: Required to create RemoteApp `.rdp` files on the Windows side - [RemoteApp Tool (GitHub)](https://github.com/kimmknight/remoteapptool)
+- **RDP File**: Created using one of the following methods (see "Creating RDP Files" section):
+  - **RemoteApp Tool** - [RemoteApp Tool (GitHub)](https://github.com/kimmknight/remoteapptool)
+  - Export from **Windows App** (formerly Microsoft Remote Desktop)
 - **Xcode Command Line Tools**: `swiftc` is required for compiling generated apps
 - **Full Disk Access**: You **must** grant Full Disk Access to:
   - Coheremote.app itself
@@ -55,11 +58,14 @@ Without Full Disk Access, `vmrun` cannot control VMware Fusion.
    - **VM Path**: `.vmx` file or `.vmwarevm` bundle
    - **VM Encryption Password** (optional): For encrypted VMs
    - **RDP File**: Your RemoteApp `.rdp` file
-   - **Windows Username**: For auto-login
+   - **Windows Username**: For login
+   - **Windows Password** (optional): Used to list installed Windows apps in the App Launcher (requires VMware Tools)
 
 3. **Options**:
    - **Suspend VM on App Exit** (default: ON): Suspends the VM when you quit the wrapper app
    - **Shutdown Windows on App Exit** (default: OFF): Shuts down Windows when you quit (takes priority over suspend)
+   - **Add App Launcher to menu bar** (default: ON): Enables the launcher panel in the macOS menu bar
+   - **Add Coheremote badge to icon** (default: OFF): Overlays a Coheremote badge on the bottom-right of the app icon
 
 4. Click **Build App**
 
@@ -85,6 +91,25 @@ Right-click the wrapper's Dock icon to access:
 | **Reconnect** | Re-establish the RDP connection (use when you've closed the Windows app) |
 | **Restart Windows** | Sends a soft restart to the VM, then reconnects RDP automatically |
 | **Shutdown and Quit** | Shuts down Windows and then quits the wrapper app |
+
+### App Launcher
+
+Click the menu bar icon to open the launcher panel:
+
+- **Header**: App name and connection status (green: connected / gray: disconnected)
+- **App List**: Installed Windows applications (click to launch)
+- **Footer Buttons**:
+  - **Reconnect**: Re-establish the RDP connection
+  - **Power**: Restart, Suspend, Shutdown, or Quit App Only
+  - **Show/Hide**: Edit which apps appear in the list (eye icon)
+  - **Refresh**: Reload the app list from the Windows guest
+  - **Quit**: Quit the wrapper app
+
+**Note**: The App Launcher app list requires the **Windows Password** to be set in Coheremote and **VMware Tools** to be installed in the Windows guest.
+
+#### Hiding Apps
+
+Click the eye icon in the footer to enter edit mode. Each app row shows a visibility toggle. Hidden apps will not appear in the normal app list. Settings persist across app restarts.
 
 ### Quitting
 
@@ -133,6 +158,46 @@ Each compiled wrapper app:
 6. **Suspends the VM** on quit (if configured)
 7. **Logs** all operations to `~/Library/Logs/Coheremote/`
 
+## Creating RDP Files
+
+### Method 1: RemoteApp Tool (Recommended)
+
+Publishes individual Windows applications as RemoteApps.
+
+1. Download and run [RemoteApp Tool](https://github.com/kimmknight/remoteapptool) on the Windows side
+2. Click **+** to add an application (e.g., `notepad.exe`)
+3. Select the application and click **Create Client Connection**
+4. Save the `.rdp` file
+5. Copy the `.rdp` file to your Mac and use it with Coheremote
+
+### Method 2: Export from Windows App
+
+Export an existing connection from Windows App (formerly Microsoft Remote Desktop) on macOS.
+
+1. Launch **Windows App**
+2. Add the target PC (if not already added):
+   - Click **+** > **Add PC**
+   - Enter the PC name (VM IP address or hostname) and save
+3. Right-click the added PC > **Export to RDP file**
+4. Save the `.rdp` file
+5. Use this `.rdp` file with Coheremote
+
+**Note**: Files exported from Windows App create a full desktop connection. To use individual RemoteApp mode, open the `.rdp` file in a text editor and add the following lines:
+
+```
+remoteapplicationmode:i:1
+remoteapplicationname:s:AppName
+remoteapplicationprogram:s:PathToApp
+```
+
+Example (for Notepad):
+
+```
+remoteapplicationmode:i:1
+remoteapplicationname:s:Notepad
+remoteapplicationprogram:s:C:\Windows\System32\notepad.exe
+```
+
 ## Troubleshooting
 
 ### "Operation not permitted" errors
@@ -157,12 +222,6 @@ This is a Windows-side issue, not a Coheremote problem. To fix:
    - Restart the Remote Desktop Services (`TermService`)
 3. Re-export the `.rdp` file from Windows and rebuild the wrapper app
 
-### Auto-login doesn't work
-
-- On the **first** connection, Windows App may prompt to save credentials to Keychain
-- Click "Allow" / "Continue" to enable automatic login on subsequent launches
-- If the prompt doesn't appear, try deleting the existing Keychain entry for this RDP connection and reconnecting
-
 ### Closed the Windows app by mistake
 
 Select **Reconnect** from the Dock menu (right-click) to re-establish the RDP connection.
@@ -171,7 +230,7 @@ Select **Reconnect** from the Dock menu (right-click) to re-establish the RDP co
 
 When launching two or more wrapper apps at the same time, the second app's window may not appear. If this happens, right-click the app's Dock icon and select **Reconnect**.
 
-**Note**: If multiple wrapper apps share the same VM, quitting one of them will suspend or shut down the VM, affecting the other apps as well. This issue is planned to be addressed in a future update.
+**Note**: If multiple wrapper apps share the same VM, the VM will not be suspended/shut down until the last wrapper app quits.
 
 ### RDP connection fails
 
@@ -216,6 +275,8 @@ Coheremote is a SwiftUI macOS project. To build:
 | `AppConfiguration.swift` | Settings persistence |
 | `AppBuilder.swift` | Wrapper app generation and compilation |
 | `WrapperTemplate.txt` | Swift source template for generated binaries |
+| `ConnectivityChecker.swift` | Network connectivity checks |
+| `WakeOnLANManager.swift` | Wake-on-LAN packet sending |
 
 ## License
 
@@ -225,7 +286,7 @@ MIT License. See [LICENSE](LICENSE) for details.
 
 - Generated wrapper apps are for **personal use**
 - Ensure compliance with Microsoft and VMware licensing terms
-- Windows passwords are not stored by Coheremote; they are managed by Windows App via macOS Keychain on first connection
+- Windows passwords for the App Launcher feature are stored securely in the macOS Keychain
 
 ## Credits
 

@@ -164,6 +164,24 @@ struct ContentView: View {
                     action: { selectFile(.icon) },
                     optional: true
                 )
+
+                if !configManager.config.iconImagePath.isEmpty {
+                    Toggle(isOn: $configManager.config.overlayIcon) {
+                        sectionLabel(icon: "square.on.square", title: localization.string(for: "overlay_icon"))
+                    }
+                    .onChange(of: configManager.config.overlayIcon) { _, _ in
+                        configManager.saveConfiguration()
+                    }
+                }
+
+                Divider()
+
+                Toggle(isOn: $configManager.config.enableStartMenu) {
+                    sectionLabel(icon: "menubar.rectangle", title: localization.string(for: "enable_start_menu"))
+                }
+                .onChange(of: configManager.config.enableStartMenu) { _, _ in
+                    configManager.saveConfiguration()
+                }
             }
             .padding(4)
         } label: {
@@ -242,6 +260,49 @@ struct ContentView: View {
                     action: { selectFile(.rdp) }
                 )
 
+                // RemoteApp変換
+                Toggle(isOn: $configManager.config.enableRemoteApp) {
+                    sectionLabel(icon: "app.badge.fill", title: localization.string(for: "enable_remote_app"))
+                }
+                .onChange(of: configManager.config.enableRemoteApp) { _, newValue in
+                    if newValue {
+                        if configManager.config.remoteAppName.isEmpty {
+                            configManager.config.remoteAppName = "Explorer"
+                        }
+                        if configManager.config.remoteAppProgram.isEmpty {
+                            configManager.config.remoteAppProgram = "C:\\Windows\\explorer.exe"
+                        }
+                    }
+                    configManager.saveConfiguration()
+                }
+
+                if configManager.config.enableRemoteApp {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(localization.string(for: "remote_app_hint"))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            sectionLabel(icon: "textformat", title: localization.string(for: "remote_app_name"), optional: true)
+                            TextField(localization.string(for: "remote_app_name_placeholder"), text: $configManager.config.remoteAppName)
+                                .textFieldStyle(.roundedBorder)
+                                .onChange(of: configManager.config.remoteAppName) { _, _ in
+                                    configManager.saveConfiguration()
+                                }
+                        }
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            sectionLabel(icon: "link", title: localization.string(for: "remote_app_program"))
+                            TextField(localization.string(for: "remote_app_program_placeholder"), text: $configManager.config.remoteAppProgram)
+                                .textFieldStyle(.roundedBorder)
+                                .onChange(of: configManager.config.remoteAppProgram) { _, _ in
+                                    configManager.saveConfiguration()
+                                }
+                        }
+                    }
+                    .padding(.leading, 22)
+                }
+
                 Divider()
 
                 // Windowsユーザー名
@@ -252,6 +313,25 @@ struct ContentView: View {
                         .onChange(of: configManager.config.windowsUsername) { _, _ in
                             configManager.saveConfiguration()
                         }
+                }
+
+                Divider()
+
+                // Windowsパスワード
+                VStack(alignment: .leading, spacing: 4) {
+                    sectionLabel(
+                        icon: "lock",
+                        title: localization.string(for: "windows_password"),
+                        optional: true
+                    )
+                    SecureField("", text: $configManager.config.windowsPassword)
+                        .textFieldStyle(.roundedBorder)
+                        .onChange(of: configManager.config.windowsPassword) { _, _ in
+                            configManager.saveConfiguration()
+                        }
+                    Text(localization.string(for: "windows_password_hint"))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
 
             }

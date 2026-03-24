@@ -40,6 +40,7 @@ jobs:
     - name: Package app
       run: |
         APP_PATH=$(find build -name "Coheremote.app" -type d | head -1)
+        xattr -cr "$APP_PATH"
         ditto -c -k --keepParent "$APP_PATH" "Coheremote-v${{ steps.version.outputs.VERSION }}.zip"
 
     - name: Create Release

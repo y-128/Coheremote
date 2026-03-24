@@ -85,7 +85,28 @@ class LocalizationManager: ObservableObject {
                 "section_vm": "Virtual Machine",
                 "section_connection": "Connection",
                 "close": "Close",
-                "menu_language": "Language"
+                "menu_language": "Language",
+                "overlay_icon": "Add Coheremote badge to icon",
+                // Network mode
+                "connection_mode": "Connection Mode",
+                "mode_local_vm": "Local VM",
+                "mode_network": "Network",
+                "section_network": "Network",
+                "host_name": "Host Name / IP Address",
+                "host_name_placeholder": "e.g. 192.168.1.100 or mypc.local",
+                "mac_address": "MAC Address",
+                "mac_address_placeholder": "e.g. AA:BB:CC:DD:EE:FF",
+                "mac_address_hint": "Required for Wake-on-LAN. Leave empty to skip WoL.",
+                "prereq_network": "Target machine has RDP enabled and is on the same network",
+                "enable_start_menu": "Add App Launcher to menu bar",
+                "windows_password": "Windows Password",
+                "windows_password_hint": "Required for App Launcher app list. VMware Tools must be installed in the guest.",
+                "enable_remote_app": "Convert to RemoteApp",
+                "remote_app_hint": "Injects RemoteApp settings into the RDP file. Use when the RDP file was exported from Windows App (full desktop).",
+                "remote_app_name": "App Display Name",
+                "remote_app_name_placeholder": "e.g. Notepad",
+                "remote_app_program": "App Path (Windows)",
+                "remote_app_program_placeholder": "e.g. C:\\Windows\\System32\\notepad.exe"
             ]
         case .japanese:
             strings = [
@@ -131,7 +152,28 @@ class LocalizationManager: ObservableObject {
                 "section_vm": "仮想マシン",
                 "section_connection": "接続設定",
                 "close": "閉じる",
-                "menu_language": "言語"
+                "menu_language": "言語",
+                "overlay_icon": "Coheremoteバッジをアイコンに追加",
+                // ネットワークモード
+                "connection_mode": "接続モード",
+                "mode_local_vm": "ローカルVM",
+                "mode_network": "ネットワーク",
+                "section_network": "ネットワーク",
+                "host_name": "ホスト名 / IPアドレス",
+                "host_name_placeholder": "例: 192.168.1.100 または mypc.local",
+                "mac_address": "MACアドレス",
+                "mac_address_placeholder": "例: AA:BB:CC:DD:EE:FF",
+                "mac_address_hint": "Wake-on-LANに必要です。WoLを使わない場合は空欄にしてください。",
+                "prereq_network": "対象マシンでRDPが有効で、同じネットワーク上にあること",
+                "enable_start_menu": "メニューバーにアプリランチャーを追加",
+                "windows_password": "Windowsパスワード",
+                "windows_password_hint": "アプリランチャーのアプリ一覧に必要です。ゲストにVMware Toolsがインストールされている必要があります。",
+                "enable_remote_app": "RemoteAppに変換",
+                "remote_app_hint": "RDPファイルにRemoteApp設定を注入します。Windows Appからエクスポートしたフルデスクトップ接続のRDPファイルを使用する場合に有効にしてください。",
+                "remote_app_name": "アプリ表示名",
+                "remote_app_name_placeholder": "例: メモ帳",
+                "remote_app_program": "アプリパス（Windows側）",
+                "remote_app_program_placeholder": "例: C:\\Windows\\System32\\notepad.exe"
             ]
         }
     }

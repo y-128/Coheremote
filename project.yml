@@ -25,6 +25,9 @@ targets:
           - "build"
           - "project.yml"
           - "WrapperTemplate.txt"
+          - "MenuBarIcon.png"
+      - path: WrapperTemplate.txt
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: y-128.Coheremote

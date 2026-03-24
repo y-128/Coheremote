@@ -9,10 +9,11 @@ import Foundation
 import AppKit
 
 class RDPManager {
-    /// RDPファイルにユーザー名とパスワード設定を追加（バイナリレベルでBOM・改行を保持）
+    /// RDPファイルにユーザー名・パスワード設定・RemoteApp設定を追加（バイナリレベルでBOM・改行を保持）
     static func modifyRDPFile(
         originalPath: String,
-        username: String
+        username: String,
+        remoteApp: (enabled: Bool, name: String, program: String) = (false, "", "")
     ) -> Data? {
         guard let rawData = FileManager.default.contents(atPath: originalPath) else {
             return nil
@@ -38,6 +39,9 @@ class RDPManager {
 
         var hasUsername = false
         var hasPromptForCredentials = false
+        var hasRemoteAppMode = false
+        var hasRemoteAppName = false
+        var hasRemoteAppProgram = false
 
         // 既存の設定を更新
         for i in 0..<lines.count {
@@ -47,6 +51,21 @@ class RDPManager {
             } else if lines[i].hasPrefix("prompt for credentials:i:") {
                 lines[i] = "prompt for credentials:i:0"
                 hasPromptForCredentials = true
+            } else if lines[i].hasPrefix("remoteapplicationmode:i:") {
+                if remoteApp.enabled {
+                    lines[i] = "remoteapplicationmode:i:1"
+                }
+                hasRemoteAppMode = true
+            } else if lines[i].hasPrefix("remoteapplicationname:s:") {
+                if remoteApp.enabled && !remoteApp.name.isEmpty {
+                    lines[i] = "remoteapplicationname:s:\(remoteApp.name)"
+                }
+                hasRemoteAppName = true
+            } else if lines[i].hasPrefix("remoteapplicationprogram:s:") {
+                if remoteApp.enabled {
+                    lines[i] = "remoteapplicationprogram:s:\(remoteApp.program)"
+                }
+                hasRemoteAppProgram = true
             }
         }
 
@@ -56,6 +75,19 @@ class RDPManager {
         }
         if !hasPromptForCredentials {
             lines.append("prompt for credentials:i:0")
+        }
+
+        // RemoteApp設定を追加（有効かつプログラムパスが指定されている場合）
+        if remoteApp.enabled && !remoteApp.program.isEmpty {
+            if !hasRemoteAppMode {
+                lines.append("remoteapplicationmode:i:1")
+            }
+            if !hasRemoteAppName && !remoteApp.name.isEmpty {
+                lines.append("remoteapplicationname:s:\(remoteApp.name)")
+            }
+            if !hasRemoteAppProgram {
+                lines.append("remoteapplicationprogram:s:\(remoteApp.program)")
+            }
         }
 
         // 末尾にも改行を付与（Windows標準）

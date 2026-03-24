@@ -1,14 +1,20 @@
 import Cocoa
 import Security
+import Network
 
 // === Configuration ===
 let APP_NAME = "{{APP_NAME}}"
+let CONNECTION_MODE = "{{CONNECTION_MODE}}"
 let VMX_PATH = "{{VMX_PATH}}"
 let VMRUN_PATH = "/Applications/VMware Fusion.app/Contents/Public/vmrun"
 let KEYCHAIN_SERVICE = "{{KEYCHAIN_SERVICE}}"
 let CLOSE_ON_EXIT = {{CLOSE_ON_EXIT}}
 let SHUTDOWN_ON_EXIT = {{SHUTDOWN_ON_EXIT}}
 let LOG_NAME = "{{LOG_NAME}}"
+let HOST_NAME = "{{HOST_NAME}}"
+let MAC_ADDRESS = "{{MAC_ADDRESS}}"
+let ENABLE_START_MENU = {{ENABLE_START_MENU}}
+let WINDOWS_USERNAME = "{{WINDOWS_USERNAME}}"
 
 // === Localization ===
 let isJapanese: Bool = Locale.preferredLanguages.first?.hasPrefix("ja") == true
@@ -34,6 +40,78 @@ func shell(_ path: String, _ args: [String]) -> (Int32, String) {
     return (proc.terminationStatus, String(data: data, encoding: .utf8) ?? "")
 }
 
+// === Network Helpers ===
+func sendWoLPacket(mac: String) -> Bool {
+    let cleaned = mac.replacingOccurrences(of: "-", with: ":").trimmingCharacters(in: .whitespaces)
+    let parts = cleaned.split(separator: ":")
+    guard parts.count == 6 else { return false }
+    var macBytes: [UInt8] = []
+    for part in parts {
+        guard let byte = UInt8(part, radix: 16) else { return false }
+        macBytes.append(byte)
+    }
+    var packet = Data(repeating: 0xFF, count: 6)
+    for _ in 0..<16 { packet.append(contentsOf: macBytes) }
+
+    let semaphore = DispatchSemaphore(value: 0)
+    var success = false
+    let connection = NWConnection(host: .ipv4(.broadcast), port: 9, using: .udp)
+    connection.stateUpdateHandler = { state in
+        if case .ready = state {
+            connection.send(content: packet, completion: .contentProcessed { error in
+                success = (error == nil)
+                connection.cancel()
+                semaphore.signal()
+            })
+        } else if case .failed = state {
+            connection.cancel()
+            semaphore.signal()
+        }
+    }
+    connection.start(queue: .global())
+    _ = semaphore.wait(timeout: .now() + 5)
+    return success
+}
+
+func pingHost(_ host: String, timeout: Int = 3) -> Bool {
+    let (code, _) = shell("/sbin/ping", ["-c", "1", "-W", "\(timeout * 1000)", host])
+    return code == 0
+}
+
+func waitForHost(_ host: String, timeout: TimeInterval = 120) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+        if pingHost(host) { return true }
+        Thread.sleep(forTimeInterval: 3)
+    }
+    return false
+}
+
+// === Hover Button ===
+class HoverButton: NSButton {
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas { removeTrackingArea(area) }
+        addTrackingArea(NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self, userInfo: nil
+        ))
+    }
+    override func mouseEntered(with event: NSEvent) {
+        layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.08).cgColor
+        if let delegate = NSApp.delegate as? WrapperApp {
+            delegate.showFooterHover(toolTip ?? "")
+        }
+    }
+    override func mouseExited(with event: NSEvent) {
+        layer?.backgroundColor = nil
+        if let delegate = NSApp.delegate as? WrapperApp {
+            delegate.hideFooterHover()
+        }
+    }
+}
+
 // === Application ===
 class WrapperApp: NSObject, NSApplicationDelegate {
     var window: NSWindow!
@@ -41,10 +119,77 @@ class WrapperApp: NSObject, NSApplicationDelegate {
     var spinner: NSProgressIndicator!
     var encPassword = ""
     var connected = false
+    var skipCleanup = false
     var logHandle: FileHandle?
+    var statusItem: NSStatusItem?
+    var winPassword = ""
+    var cachedApps: [(name: String, path: String)] = []
+    var appsLoading = false
+    var startMenuPanel: NSPanel?
+    var appListStack: NSStackView?
+    var headerStatusDot: NSView?
+    var headerStatusLabel: NSTextField?
+    var startMenuVisible = false
+    var clickMonitor: Any?
+    var hiddenApps: Set<String> = []
+    var editingAppList = false
+    var editButton: NSButton?
+    var footerHoverLabel: NSTextField?
 
     var rdpPath: String {
         Bundle.main.resourcePath! + "/app.rdp"
+    }
+
+    // MARK: - VM Lock (multi-wrapper coordination)
+
+    var lockFilePath: String = ""
+
+    func vmxHash() -> String {
+        var hasher = Hasher()
+        hasher.combine(VMX_PATH)
+        let h = hasher.finalize()
+        return String(format: "%08x", abs(h))
+    }
+
+    func lockDir() -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Coheremote/running")
+    }
+
+    func registerRunning() {
+        let dir = lockDir()
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let pid = ProcessInfo.processInfo.processIdentifier
+        let file = dir.appendingPathComponent("\(vmxHash())_\(pid)")
+        lockFilePath = file.path
+        FileManager.default.createFile(atPath: file.path, contents: VMX_PATH.data(using: .utf8))
+    }
+
+    func unregisterRunning() {
+        if !lockFilePath.isEmpty {
+            try? FileManager.default.removeItem(atPath: lockFilePath)
+        }
+    }
+
+    func otherWrappersUsingVM() -> Bool {
+        let dir = lockDir()
+        let prefix = vmxHash() + "_"
+        let myPid = "\(ProcessInfo.processInfo.processIdentifier)"
+        guard let files = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else {
+            return false
+        }
+        for file in files where file.hasPrefix(prefix) {
+            let pidStr = String(file.dropFirst(prefix.count))
+            if pidStr == myPid { continue }
+            // Check if the process is still alive
+            if let pid = Int32(pidStr), kill(pid, 0) == 0 {
+                return true
+            } else {
+                // Stale lock file, clean up
+                try? FileManager.default.removeItem(at: dir.appendingPathComponent(file))
+            }
+        }
+        return false
     }
 
     // MARK: - Logging
@@ -96,6 +241,24 @@ class WrapperApp: NSObject, NSApplicationDelegate {
         }
     }
 
+    // MARK: - Guest Credentials
+
+    func loadGuestPassword() {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: KEYCHAIN_SERVICE,
+            kSecAttrAccount as String: "windowsPassword",
+            kSecReturnData as String: true
+        ]
+        var item: CFTypeRef?
+        if SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+           let data = item as? Data,
+           let pw = String(data: data, encoding: .utf8) {
+            winPassword = pw
+            log("[KEYCHAIN] Windows password loaded")
+        }
+    }
+
     // MARK: - vmrun
 
     func vmrun(_ cmd: String, _ extraArgs: [String] = []) -> (Int32, String) {
@@ -104,6 +267,86 @@ class WrapperApp: NSObject, NSApplicationDelegate {
         args.append(cmd)
         args += extraArgs
         return shell(VMRUN_PATH, args)
+    }
+
+    func vmrunGuest(_ cmd: String, _ extraArgs: [String] = []) -> (Int32, String) {
+        var args = ["-T", "fusion"]
+        if !encPassword.isEmpty { args += ["-vp", encPassword] }
+        args += ["-gu", WINDOWS_USERNAME, "-gp", winPassword]
+        args.append(cmd)
+        args += extraArgs
+        return shell(VMRUN_PATH, args)
+    }
+
+    // MARK: - Windows App List
+
+    func loadInstalledApps() {
+        guard !winPassword.isEmpty, !appsLoading else { return }
+        appsLoading = true
+        log("[APPS] Loading installed apps...")
+
+        DispatchQueue.global().async {
+            var apps: [(name: String, path: String)] = []
+            let basePaths = [
+                "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs",
+                "C:\\Users\\\(WINDOWS_USERNAME)\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs"
+            ]
+            for basePath in basePaths {
+                self.collectApps(from: basePath, into: &apps, depth: 0)
+            }
+
+            // Sort and deduplicate
+            apps.sort { $0.name.lowercased() < $1.name.lowercased() }
+            var seen = Set<String>()
+            apps = apps.filter { seen.insert($0.name).inserted }
+
+            DispatchQueue.main.async {
+                self.cachedApps = apps
+                self.appsLoading = false
+                self.log("[APPS] Loaded \(apps.count) apps")
+            }
+        }
+    }
+
+    func collectApps(from dirPath: String, into apps: inout [(name: String, path: String)], depth: Int) {
+        guard depth < 3 else { return }
+        let (code, output) = vmrunGuest("listDirectoryInGuest", [VMX_PATH, dirPath])
+        guard code == 0 else { return }
+
+        let lines = output.components(separatedBy: "\n")
+        for line in lines {
+            let name = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if name.isEmpty || name.hasPrefix("Directory list:") { continue }
+
+            let fullPath = dirPath + "\\" + name
+
+            if name.lowercased().hasSuffix(".lnk") {
+                let displayName = String(name.dropLast(4))
+                // Skip uninstallers and desktop.ini
+                let lower = displayName.lowercased()
+                if lower.contains("uninstall") || lower == "desktop" { continue }
+                apps.append((name: displayName, path: fullPath))
+            } else if name.lowercased().hasSuffix(".url") ||
+                      name.lowercased().hasSuffix(".ini") ||
+                      name.lowercased().hasSuffix(".txt") {
+                continue
+            } else {
+                collectApps(from: fullPath, into: &apps, depth: depth + 1)
+            }
+        }
+    }
+
+    func launchWindowsApp(path: String) {
+        log("[APP] Launching: \(path)")
+        DispatchQueue.global().async {
+            let (code, output) = self.vmrunGuest(
+                "runProgramInGuest",
+                [VMX_PATH, "-noWait", "-interactive", "-activeWindow",
+                 "C:\\Windows\\System32\\cmd.exe",
+                 "/c start \"\" \"\(path)\""]
+            )
+            self.log("[APP] exit=\(code) output=\(output)")
+        }
     }
 
     func vmIsRunning() -> Bool {
@@ -199,6 +442,601 @@ class WrapperApp: NSObject, NSApplicationDelegate {
         NSApp.mainMenu = menuBar
     }
 
+    // MARK: - Status Bar (App Launcher)
+
+    func setupStatusBar() {
+        guard ENABLE_START_MENU else { return }
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        guard let button = statusItem?.button else { return }
+
+        let iconPath = Bundle.main.resourcePath! + "/MenuBarIcon.png"
+        if let img = NSImage(contentsOfFile: iconPath) {
+            img.size = NSSize(width: 18, height: 18)
+            img.isTemplate = true
+            button.image = img
+        } else if let img = NSImage(systemSymbolName: "square.grid.2x2", accessibilityDescription: APP_NAME) {
+            img.size = NSSize(width: 16, height: 16)
+            button.image = img
+        } else {
+            button.title = APP_NAME
+        }
+        button.action = #selector(toggleStartMenu)
+        button.target = self
+        statusItem?.menu = nil
+    }
+
+    func createStartMenuPanel() {
+        let panelWidth: CGFloat = 300
+        let panelHeight: CGFloat = 420
+
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: panelWidth, height: panelHeight),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.level = .statusBar
+        panel.isFloatingPanel = true
+        panel.hidesOnDeactivate = false
+        panel.hasShadow = true
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.isMovable = false
+
+        // Translucent background
+        let visualEffect = NSVisualEffectView(frame: panel.contentView!.bounds)
+        visualEffect.autoresizingMask = [.width, .height]
+        visualEffect.material = .menu
+        visualEffect.state = .active
+        visualEffect.blendingMode = .behindWindow
+        visualEffect.wantsLayer = true
+        visualEffect.layer?.cornerRadius = 10
+        visualEffect.layer?.masksToBounds = true
+        panel.contentView!.addSubview(visualEffect)
+
+        // Container with layout
+        let container = NSView(frame: visualEffect.bounds)
+        container.autoresizingMask = [.width, .height]
+        visualEffect.addSubview(container)
+
+        // --- Header ---
+        let headerHeight: CGFloat = 50
+        let headerView = NSView(frame: NSRect(x: 0, y: panelHeight - headerHeight, width: panelWidth, height: headerHeight))
+        headerView.autoresizingMask = [.width, .minYMargin]
+
+        // Status dot
+        let dot = NSView(frame: NSRect(x: 16, y: 20, width: 10, height: 10))
+        dot.wantsLayer = true
+        dot.layer?.cornerRadius = 5
+        dot.layer?.backgroundColor = NSColor.systemGray.cgColor
+        headerView.addSubview(dot)
+        headerStatusDot = dot
+
+        // App name + status
+        let nameLabel = NSTextField(labelWithString: APP_NAME)
+        nameLabel.frame = NSRect(x: 34, y: 24, width: panelWidth - 50, height: 18)
+        nameLabel.font = NSFont.systemFont(ofSize: 14, weight: .semibold)
+        nameLabel.textColor = .labelColor
+        headerView.addSubview(nameLabel)
+
+        let statusLabel = NSTextField(labelWithString: L("Not Connected", "未接続"))
+        statusLabel.frame = NSRect(x: 34, y: 8, width: panelWidth - 50, height: 14)
+        statusLabel.font = NSFont.systemFont(ofSize: 11)
+        statusLabel.textColor = .secondaryLabelColor
+        headerView.addSubview(statusLabel)
+        headerStatusLabel = statusLabel
+
+        // Header separator
+        let headerSep = NSBox(frame: NSRect(x: 12, y: 0, width: panelWidth - 24, height: 1))
+        headerSep.boxType = .separator
+        headerView.addSubview(headerSep)
+
+        container.addSubview(headerView)
+
+        // --- Scrollable App List ---
+        let footerHeight: CGFloat = 48
+        let scrollY = footerHeight
+        let scrollHeight = panelHeight - headerHeight - footerHeight
+
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: scrollY, width: panelWidth, height: scrollHeight))
+        scrollView.autoresizingMask = [.width, .height]
+        scrollView.hasVerticalScroller = true
+        scrollView.drawsBackground = false
+        scrollView.autohidesScrollers = true
+        scrollView.scrollerStyle = .overlay
+
+        let stack = NSStackView(frame: NSRect(x: 0, y: 0, width: panelWidth, height: 0))
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 0
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let clipView = NSClipView()
+        clipView.drawsBackground = false
+        clipView.documentView = stack
+        scrollView.contentView = clipView
+
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: clipView.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: clipView.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: clipView.topAnchor)
+        ])
+
+        container.addSubview(scrollView)
+        appListStack = stack
+
+        // --- Footer ---
+        let footerSep = NSBox(frame: NSRect(x: 12, y: footerHeight, width: panelWidth - 24, height: 1))
+        footerSep.boxType = .separator
+        container.addSubview(footerSep)
+
+        let footerView = NSView(frame: NSRect(x: 0, y: 0, width: panelWidth, height: footerHeight))
+        footerView.autoresizingMask = [.width]
+
+        let btnWidth: CGFloat = 60
+        let btnHeight: CGFloat = 32
+        let btnY: CGFloat = 8
+
+        // Reconnect button
+        let reconnectBtn = makeFooterButton(
+            title: "", symbolName: "arrow.clockwise",
+            action: #selector(doReconnect),
+            frame: NSRect(x: 12, y: btnY, width: btnHeight, height: btnHeight)
+        )
+        reconnectBtn.toolTip = L("Reconnect", "再接続")
+        footerView.addSubview(reconnectBtn)
+
+        // Power button (VM mode only)
+        if CONNECTION_MODE != "network" {
+            let powerBtn = makeFooterButton(
+                title: "", symbolName: "power",
+                action: #selector(showPowerMenu(_:)),
+                frame: NSRect(x: 52, y: btnY, width: btnHeight, height: btnHeight)
+            )
+            powerBtn.toolTip = L("Power", "電源")
+            footerView.addSubview(powerBtn)
+        }
+
+        // Edit button (toggle app visibility)
+        let editBtn = makeFooterButton(
+            title: "", symbolName: "eye.slash",
+            action: #selector(toggleEditMode),
+            frame: NSRect(x: panelWidth - btnWidth - 12 - btnHeight * 2 - 16, y: btnY, width: btnHeight, height: btnHeight)
+        )
+        editBtn.toolTip = L("Show/Hide Apps", "アプリの表示/非表示")
+        footerView.addSubview(editBtn)
+        editButton = editBtn
+
+        // Refresh button
+        let refreshBtn = makeFooterButton(
+            title: "", symbolName: "arrow.triangle.2.circlepath",
+            action: #selector(doRefreshApps),
+            frame: NSRect(x: panelWidth - btnWidth - 12 - btnHeight - 8, y: btnY, width: btnHeight, height: btnHeight)
+        )
+        refreshBtn.toolTip = L("Refresh Apps", "アプリ更新")
+        footerView.addSubview(refreshBtn)
+
+        // Quit button
+        let quitBtn = makeFooterButton(
+            title: L("Quit", "終了"), symbolName: "xmark.circle",
+            action: #selector(doQuitFromPanel),
+            frame: NSRect(x: panelWidth - btnWidth - 12, y: btnY, width: btnWidth, height: btnHeight)
+        )
+        footerView.addSubview(quitBtn)
+
+        // Hover label (shows button name on mouse over)
+        let hoverLabel = NSTextField(labelWithString: "")
+        hoverLabel.frame = NSRect(x: 0, y: footerHeight + 2, width: panelWidth, height: 18)
+        hoverLabel.font = NSFont.systemFont(ofSize: 11)
+        hoverLabel.textColor = .secondaryLabelColor
+        hoverLabel.alignment = .center
+        hoverLabel.isHidden = true
+        container.addSubview(hoverLabel)
+        footerHoverLabel = hoverLabel
+
+        container.addSubview(footerView)
+
+        startMenuPanel = panel
+    }
+
+    func makeFooterButton(title: String, symbolName: String, action: Selector, frame: NSRect) -> NSButton {
+        let btn = HoverButton(frame: frame)
+        btn.bezelStyle = .recessed
+        btn.isBordered = false
+        btn.target = self
+        btn.action = action
+        btn.font = NSFont.systemFont(ofSize: 12)
+
+        if let img = NSImage(systemSymbolName: symbolName, accessibilityDescription: title) {
+            img.size = NSSize(width: 14, height: 14)
+            btn.image = img
+            btn.imagePosition = title.isEmpty ? .imageOnly : .imageLeading
+        }
+        if !title.isEmpty {
+            btn.title = title
+        }
+
+        btn.wantsLayer = true
+        return btn
+    }
+
+    func rebuildAppList() {
+        guard let stack = appListStack else { return }
+        stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+
+        if appsLoading {
+            let loadingLabel = NSTextField(labelWithString: L("Loading apps...", "アプリを読み込み中..."))
+            loadingLabel.font = NSFont.systemFont(ofSize: 12)
+            loadingLabel.textColor = .secondaryLabelColor
+            loadingLabel.alignment = .center
+            loadingLabel.translatesAutoresizingMaskIntoConstraints = false
+            stack.addArrangedSubview(loadingLabel)
+            loadingLabel.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            loadingLabel.heightAnchor.constraint(equalToConstant: 36).isActive = true
+            return
+        }
+
+        if cachedApps.isEmpty && connected {
+            let emptyLabel = NSTextField(labelWithString: L("No apps found", "アプリが見つかりません"))
+            emptyLabel.font = NSFont.systemFont(ofSize: 12)
+            emptyLabel.textColor = .secondaryLabelColor
+            emptyLabel.alignment = .center
+            emptyLabel.translatesAutoresizingMaskIntoConstraints = false
+            stack.addArrangedSubview(emptyLabel)
+            emptyLabel.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            emptyLabel.heightAnchor.constraint(equalToConstant: 36).isActive = true
+            return
+        }
+
+        // App list
+        for (index, app) in cachedApps.enumerated() {
+            let isHidden = hiddenApps.contains(app.name)
+
+            // In normal mode, skip hidden apps
+            if !editingAppList && isHidden { continue }
+
+            if editingAppList {
+                let row = makeEditableAppRow(name: app.name, tag: index, visible: !isHidden)
+                stack.addArrangedSubview(row)
+                row.leadingAnchor.constraint(equalTo: stack.leadingAnchor).isActive = true
+                row.trailingAnchor.constraint(equalTo: stack.trailingAnchor).isActive = true
+            } else {
+                let row = makeAppRow(name: app.name, tag: index)
+                stack.addArrangedSubview(row)
+                row.leadingAnchor.constraint(equalTo: stack.leadingAnchor).isActive = true
+                row.trailingAnchor.constraint(equalTo: stack.trailingAnchor).isActive = true
+            }
+        }
+
+        // Other Coheremote wrapper apps section
+        let otherApps = NSWorkspace.shared.runningApplications.filter {
+            $0.bundleIdentifier?.hasPrefix("com.coheremote.") == true &&
+            $0.processIdentifier != ProcessInfo.processInfo.processIdentifier
+        }
+        if !otherApps.isEmpty {
+            let sepBox = NSBox()
+            sepBox.boxType = .separator
+            sepBox.translatesAutoresizingMaskIntoConstraints = false
+            stack.addArrangedSubview(sepBox)
+            sepBox.leadingAnchor.constraint(equalTo: stack.leadingAnchor, constant: 12).isActive = true
+            sepBox.trailingAnchor.constraint(equalTo: stack.trailingAnchor, constant: -12).isActive = true
+
+            for app in otherApps {
+                let name = app.localizedName ?? "Unknown"
+                let row = makeOtherAppRow(name: name, pid: app.processIdentifier, icon: app.icon)
+                stack.addArrangedSubview(row)
+                row.leadingAnchor.constraint(equalTo: stack.leadingAnchor).isActive = true
+                row.trailingAnchor.constraint(equalTo: stack.trailingAnchor).isActive = true
+            }
+        }
+    }
+
+    func makeAppRow(name: String, tag: Int) -> NSView {
+        let rowHeight: CGFloat = 30
+        let row = NSButton(frame: NSRect(x: 0, y: 0, width: 300, height: rowHeight))
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.heightAnchor.constraint(equalToConstant: rowHeight).isActive = true
+        row.bezelStyle = .recessed
+        row.isBordered = false
+        row.title = "  \(name)"
+        row.font = NSFont.systemFont(ofSize: 13)
+        row.alignment = .left
+        row.contentTintColor = .labelColor
+        row.tag = tag
+        row.target = self
+        row.action = #selector(doLaunchApp(_:))
+
+        row.wantsLayer = true
+        let area = NSTrackingArea(
+            rect: row.bounds,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: row, userInfo: nil
+        )
+        row.addTrackingArea(area)
+        return row
+    }
+
+    func makeEditableAppRow(name: String, tag: Int, visible: Bool) -> NSView {
+        let rowHeight: CGFloat = 30
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: rowHeight))
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.heightAnchor.constraint(equalToConstant: rowHeight).isActive = true
+
+        // Visibility toggle button
+        let toggleBtn = NSButton(frame: NSRect(x: 8, y: 5, width: 20, height: 20))
+        toggleBtn.bezelStyle = .recessed
+        toggleBtn.isBordered = false
+        toggleBtn.tag = tag
+        toggleBtn.target = self
+        toggleBtn.action = #selector(toggleAppVisibility(_:))
+        let symbolName = visible ? "eye" : "eye.slash"
+        if let img = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil) {
+            img.size = NSSize(width: 14, height: 14)
+            toggleBtn.image = img
+        }
+        toggleBtn.contentTintColor = visible ? .controlAccentColor : .tertiaryLabelColor
+        container.addSubview(toggleBtn)
+
+        // App name label
+        let nameLabel = NSTextField(labelWithString: name)
+        nameLabel.frame = NSRect(x: 34, y: 6, width: 250, height: 18)
+        nameLabel.font = NSFont.systemFont(ofSize: 13)
+        nameLabel.textColor = visible ? .labelColor : .tertiaryLabelColor
+        nameLabel.lineBreakMode = .byTruncatingTail
+        container.addSubview(nameLabel)
+
+        return container
+    }
+
+    func makeOtherAppRow(name: String, pid: Int32, icon: NSImage?) -> NSView {
+        let rowHeight: CGFloat = 30
+        let row = NSButton(frame: NSRect(x: 0, y: 0, width: 300, height: rowHeight))
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.heightAnchor.constraint(equalToConstant: rowHeight).isActive = true
+        row.bezelStyle = .recessed
+        row.isBordered = false
+        row.title = "  \(name)"
+        row.font = NSFont.systemFont(ofSize: 13)
+        row.alignment = .left
+        row.contentTintColor = .labelColor
+        row.tag = Int(pid)
+        row.target = self
+        row.action = #selector(switchToApp(_:))
+
+        if let ic = icon {
+            ic.size = NSSize(width: 16, height: 16)
+            row.image = ic
+            row.imagePosition = .imageLeading
+        }
+
+        row.wantsLayer = true
+        let area = NSTrackingArea(
+            rect: row.bounds,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: row, userInfo: nil
+        )
+        row.addTrackingArea(area)
+        return row
+    }
+
+    func updateHeaderStatus() {
+        let statusText = connected
+            ? L("Connected", "接続中")
+            : L("Not Connected", "未接続")
+        headerStatusLabel?.stringValue = statusText
+        headerStatusDot?.layer?.backgroundColor = connected
+            ? NSColor.systemGreen.cgColor
+            : NSColor.systemGray.cgColor
+    }
+
+    func showFooterHover(_ text: String) {
+        guard !text.isEmpty else { return }
+        footerHoverLabel?.stringValue = text
+        footerHoverLabel?.isHidden = false
+    }
+
+    func hideFooterHover() {
+        footerHoverLabel?.isHidden = true
+    }
+
+    func loadHiddenApps() {
+        let key = "Coheremote-\(APP_NAME)-hiddenApps"
+        if let arr = UserDefaults.standard.stringArray(forKey: key) {
+            hiddenApps = Set(arr)
+        }
+    }
+
+    func saveHiddenApps() {
+        let key = "Coheremote-\(APP_NAME)-hiddenApps"
+        UserDefaults.standard.set(Array(hiddenApps), forKey: key)
+    }
+
+    @objc func toggleEditMode() {
+        editingAppList.toggle()
+        editButton?.contentTintColor = editingAppList ? .controlAccentColor : .labelColor
+        rebuildAppList()
+    }
+
+    @objc func toggleAppVisibility(_ sender: NSButton) {
+        let index = sender.tag
+        guard index >= 0, index < cachedApps.count else { return }
+        let appName = cachedApps[index].name
+        if hiddenApps.contains(appName) {
+            hiddenApps.remove(appName)
+        } else {
+            hiddenApps.insert(appName)
+        }
+        saveHiddenApps()
+        rebuildAppList()
+    }
+
+    @objc func toggleStartMenu() {
+        if startMenuVisible {
+            dismissStartMenu()
+        } else {
+            showStartMenu()
+        }
+    }
+
+    func showStartMenu() {
+        if startMenuPanel == nil { createStartMenuPanel() }
+        guard let panel = startMenuPanel else { return }
+
+        updateHeaderStatus()
+        rebuildAppList()
+        positionStartMenu()
+        panel.orderFrontRegardless()
+        startMenuVisible = true
+
+        // Click outside to dismiss
+        clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            self?.dismissStartMenu()
+        }
+    }
+
+    func dismissStartMenu() {
+        startMenuPanel?.orderOut(nil)
+        startMenuVisible = false
+        if editingAppList {
+            editingAppList = false
+            editButton?.contentTintColor = .labelColor
+        }
+        if let monitor = clickMonitor {
+            NSEvent.removeMonitor(monitor)
+            clickMonitor = nil
+        }
+    }
+
+    func positionStartMenu() {
+        guard let panel = startMenuPanel,
+              let button = statusItem?.button,
+              let btnWindow = button.window else { return }
+
+        let btnRect = button.convert(button.bounds, to: nil)
+        let screenRect = btnWindow.convertToScreen(btnRect)
+
+        let panelSize = panel.frame.size
+        var x = screenRect.midX - panelSize.width / 2
+        let y = screenRect.minY - panelSize.height - 4
+
+        // Keep within screen
+        if let screen = btnWindow.screen ?? NSScreen.main {
+            let visibleFrame = screen.visibleFrame
+            if x + panelSize.width > visibleFrame.maxX {
+                x = visibleFrame.maxX - panelSize.width
+            }
+            if x < visibleFrame.minX {
+                x = visibleFrame.minX
+            }
+        }
+
+        panel.setFrameOrigin(NSPoint(x: x, y: y))
+    }
+
+    @objc func showPowerMenu(_ sender: NSButton) {
+        let menu = NSMenu()
+
+        let restartItem = NSMenuItem(
+            title: L("Restart Windows", "Windowsを再起動"),
+            action: #selector(doRestart), keyEquivalent: "")
+        restartItem.target = self
+        restartItem.image = NSImage(systemSymbolName: "arrow.clockwise.circle", accessibilityDescription: nil)
+        menu.addItem(restartItem)
+
+        let suspendItem = NSMenuItem(
+            title: L("Suspend VM and Quit", "VMをサスペンドして終了"),
+            action: #selector(doSuspendAndQuit), keyEquivalent: "")
+        suspendItem.target = self
+        suspendItem.image = NSImage(systemSymbolName: "pause.circle", accessibilityDescription: nil)
+        menu.addItem(suspendItem)
+
+        let shutdownItem = NSMenuItem(
+            title: L("Shutdown and Quit", "シャットダウンして終了"),
+            action: #selector(doShutdownAndQuit), keyEquivalent: "")
+        shutdownItem.target = self
+        shutdownItem.image = NSImage(systemSymbolName: "power.circle", accessibilityDescription: nil)
+        menu.addItem(shutdownItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let quitOnlyItem = NSMenuItem(
+            title: L("Quit App Only", "アプリだけ終了"),
+            action: #selector(doQuitAppOnly), keyEquivalent: "")
+        quitOnlyItem.target = self
+        menu.addItem(quitOnlyItem)
+
+        NSMenu.popUpContextMenu(menu, with: NSApp.currentEvent!, for: sender)
+    }
+
+    @objc func doQuitFromPanel() {
+        dismissStartMenu()
+        if connected && CONNECTION_MODE != "network" {
+            // Show power menu to choose quit method
+            let alert = NSAlert()
+            alert.messageText = L("Quit \(APP_NAME)", "\(APP_NAME) を終了")
+            alert.informativeText = L("Choose how to quit:", "終了方法を選択:")
+            alert.addButton(withTitle: L("Suspend VM and Quit", "VMをサスペンドして終了"))
+            alert.addButton(withTitle: L("Quit App Only", "アプリだけ終了"))
+            alert.addButton(withTitle: L("Cancel", "キャンセル"))
+            let response = alert.runModal()
+            switch response {
+            case .alertFirstButtonReturn:
+                doSuspendAndQuit()
+            case .alertSecondButtonReturn:
+                doQuitAppOnly()
+            default:
+                break
+            }
+        } else {
+            NSApp.terminate(nil)
+        }
+    }
+
+    @objc func doLaunchApp(_ sender: Any) {
+        let tag: Int
+        if let btn = sender as? NSButton { tag = btn.tag }
+        else if let item = sender as? NSMenuItem { tag = item.tag }
+        else { return }
+        guard tag >= 0, tag < cachedApps.count else { return }
+        dismissStartMenu()
+        launchWindowsApp(path: cachedApps[tag].path)
+    }
+
+    @objc func doRefreshApps() {
+        cachedApps = []
+        loadInstalledApps()
+        rebuildAppList()
+    }
+
+    @objc func switchToApp(_ sender: Any) {
+        let tag: Int
+        if let btn = sender as? NSButton { tag = btn.tag }
+        else if let item = sender as? NSMenuItem { tag = item.tag }
+        else { return }
+        dismissStartMenu()
+        let pid = Int32(tag)
+        if let app = NSWorkspace.shared.runningApplications.first(where: { $0.processIdentifier == pid }) {
+            app.activate(options: [])
+        }
+    }
+
+    @objc func doSuspendAndQuit() {
+        dismissStartMenu()
+        guard connected, CONNECTION_MODE != "network" else { return }
+        connected = false
+        showWindow()
+        DispatchQueue.global().async {
+            self.status(L("Suspending VM...", "VMをサスペンド中..."))
+            let (code, output) = self.vmrun("suspend", [VMX_PATH])
+            self.log("[VM] vmrun suspend: exit=\(code) output=\(output)")
+            self.log("=== Suspend complete, quitting ===")
+            DispatchQueue.main.async {
+                self.skipCleanup = true
+                NSApp.terminate(nil)
+            }
+        }
+    }
+
     func showWindow() {
         DispatchQueue.main.async {
             self.spinner?.startAnimation(nil)
@@ -220,28 +1058,80 @@ class WrapperApp: NSObject, NSApplicationDelegate {
         setupLog()
         log("========================================")
         log("=== \(APP_NAME) wrapper starting ===")
+        log("=== Mode: \(CONNECTION_MODE) ===")
         log("========================================")
+        registerRunning()
         setupMenu()
+        setupStatusBar()
         setupWindow()
         loadPassword()
+        loadGuestPassword()
+        loadHiddenApps()
 
         DispatchQueue.global().async {
-            self.ensureFusion()
-            self.startVM()
+            self.launchLocalVMMode()
+        }
+    }
 
-            self.status(L("Waiting for VM...", "VMの起動を待機中..."))
-            guard self.waitForVM() else {
-                self.status(L("VM start failed", "VMの起動に失敗"))
-                return
+    func launchLocalVMMode() {
+        ensureFusion()
+        startVM()
+
+        status(L("Waiting for VM...", "VMの起動を待機中..."))
+        guard waitForVM() else {
+            status(L("VM start failed", "VMの起動に失敗"))
+            return
+        }
+
+        status(L("Connecting...", "接続中..."))
+        openRDP()
+
+        Thread.sleep(forTimeInterval: 2)
+        hideWindow()
+        connected = true
+
+        // Load Windows app list for App Launcher
+        if ENABLE_START_MENU && !winPassword.isEmpty {
+            loadInstalledApps()
+        }
+    }
+
+    func launchNetworkMode() {
+        // Check if host is already reachable
+        if pingHost(HOST_NAME) {
+            log("[NET] Host \(HOST_NAME) is already reachable")
+        } else {
+            // Send WoL if MAC address is configured
+            if !MAC_ADDRESS.isEmpty {
+                status(L("Sending Wake-on-LAN...", "Wake-on-LANを送信中..."))
+                log("[WOL] Sending magic packet to \(MAC_ADDRESS)")
+                if sendWoLPacket(mac: MAC_ADDRESS) {
+                    log("[WOL] Magic packet sent successfully")
+                } else {
+                    log("[WOL] Failed to send magic packet")
+                }
+                Thread.sleep(forTimeInterval: 3)
             }
 
-            self.status(L("Connecting...", "接続中..."))
-            self.openRDP()
-
-            Thread.sleep(forTimeInterval: 2)
-            self.hideWindow()
-            self.connected = true
+            // Wait for host to come online
+            status(L("Waiting for host...", "ホストの起動を待機中..."))
+            guard waitForHost(HOST_NAME, timeout: 120) else {
+                status(L("Host unreachable", "ホストに到達できません"))
+                log("[ERROR] Host \(HOST_NAME) did not come online within timeout")
+                return
+            }
+            log("[NET] Host \(HOST_NAME) is now reachable")
         }
+
+        // Give the host a moment for RDP service to be ready
+        Thread.sleep(forTimeInterval: 5)
+
+        status(L("Connecting...", "接続中..."))
+        openRDP()
+
+        Thread.sleep(forTimeInterval: 2)
+        hideWindow()
+        connected = true
     }
 
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
@@ -272,16 +1162,28 @@ class WrapperApp: NSObject, NSApplicationDelegate {
             )
             shutdownItem.target = self
             menu.addItem(shutdownItem)
+
+            menu.addItem(NSMenuItem.separator())
+
+            let quitOnlyItem = NSMenuItem(
+                title: L("Quit App Only", "アプリだけ終了"),
+                action: #selector(doQuitAppOnly),
+                keyEquivalent: ""
+            )
+            quitOnlyItem.target = self
+            menu.addItem(quitOnlyItem)
         }
         return menu
     }
 
     @objc func doReconnect() {
+        dismissStartMenu()
         log("[RDP] Reconnecting...")
         openRDP()
     }
 
     @objc func doRestart() {
+        dismissStartMenu()
         guard connected else { return }
         connected = false
         showWindow()
@@ -318,6 +1220,7 @@ class WrapperApp: NSObject, NSApplicationDelegate {
     }
 
     @objc func doShutdownAndQuit() {
+        dismissStartMenu()
         guard connected else { return }
         connected = false
         showWindow()
@@ -340,8 +1243,28 @@ class WrapperApp: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc func doQuitAppOnly() {
+        log("[QUIT] Quitting app only (VM will keep running)")
+        skipCleanup = true
+        NSApp.terminate(nil)
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard vmIsRunning() else {
+        unregisterRunning()
+
+        // In network mode, no VM cleanup needed
+        if CONNECTION_MODE == "network" {
+            log("=== Goodbye ===")
+            return .terminateNow
+        }
+
+        guard vmIsRunning(), !skipCleanup else {
+            log("=== Goodbye ===")
+            return .terminateNow
+        }
+
+        if otherWrappersUsingVM() {
+            log("[CLEANUP] Other wrapper apps are using the same VM, skipping VM cleanup")
             log("=== Goodbye ===")
             return .terminateNow
         }
