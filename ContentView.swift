@@ -532,6 +532,7 @@ struct ContentView: View {
 
         Task {
             do {
+                let safeName = AppBuilder.sanitizeAppName(appName)
                 try await AppBuilder.buildApp(
                     appName: appName,
                     config: configManager.config,
@@ -543,12 +544,12 @@ struct ContentView: View {
 
                     let content = UNMutableNotificationContent()
                     content.title = localization.string(for: "build_success")
-                    content.body = "\(appName).app"
+                    content.body = "\(safeName).app"
                     let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
                     UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
 
                     NSWorkspace.shared.selectFile(
-                        saveLocation.appendingPathComponent("\(appName).app").path,
+                        saveLocation.appendingPathComponent("\(safeName).app").path,
                         inFileViewerRootedAtPath: saveLocation.path
                     )
                 }

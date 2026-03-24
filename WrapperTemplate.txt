@@ -260,6 +260,10 @@ class WrapperApp: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - vmrun
+    // NOTE: vmrun does not support passing passwords via stdin or file.
+    // Passwords appear in process arguments and may be visible to other
+    // processes running under the same user via `ps`. This is a known
+    // limitation of the vmrun CLI.
 
     func vmrun(_ cmd: String, _ extraArgs: [String] = []) -> (Int32, String) {
         var args = ["-T", "fusion"]
@@ -336,14 +340,24 @@ class WrapperApp: NSObject, NSApplicationDelegate {
         }
     }
 
+    func escapeCmdArg(_ s: String) -> String {
+        var r = s
+        for ch in ["&", "|", "(", ")", "<", ">", "^", "%"] {
+            r = r.replacingOccurrences(of: ch, with: "^\(ch)")
+        }
+        r = r.replacingOccurrences(of: "\"", with: "\"\"")
+        return r
+    }
+
     func launchWindowsApp(path: String) {
         log("[APP] Launching: \(path)")
+        let safePath = escapeCmdArg(path)
         DispatchQueue.global().async {
             let (code, output) = self.vmrunGuest(
                 "runProgramInGuest",
                 [VMX_PATH, "-noWait", "-interactive", "-activeWindow",
                  "C:\\Windows\\System32\\cmd.exe",
-                 "/c start \"\" \"\(path)\""]
+                 "/c start \"\" \"\(safePath)\""]
             )
             self.log("[APP] exit=\(code) output=\(output)")
         }

@@ -62,6 +62,7 @@ Without Full Disk Access, `vmrun` cannot control VMware Fusion.
    - **Windows Password** (optional): Used to list installed Windows apps in the App Launcher (requires VMware Tools)
 
 3. **Options**:
+   - **RemoteApp Conversion** (default: OFF): Automatically injects RemoteApp settings into the RDP file. Converts a regular full-desktop RDP connection into an individual app RemoteApp connection without needing RemoteApp Tool
    - **Suspend VM on App Exit** (default: ON): Suspends the VM when you quit the wrapper app
    - **Shutdown Windows on App Exit** (default: OFF): Shuts down Windows when you quit (takes priority over suspend)
    - **Add App Launcher to menu bar** (default: ON): Enables the launcher panel in the macOS menu bar
@@ -182,7 +183,7 @@ Export an existing connection from Windows App (formerly Microsoft Remote Deskto
 4. Save the `.rdp` file
 5. Use this `.rdp` file with Coheremote
 
-**Note**: Files exported from Windows App create a full desktop connection. To use individual RemoteApp mode, open the `.rdp` file in a text editor and add the following lines:
+**Note**: Files exported from Windows App create a full desktop connection. To use individual RemoteApp mode, use Method 3 (Coheremote's built-in feature) or open the `.rdp` file in a text editor and add the following lines:
 
 ```
 remoteapplicationmode:i:1
@@ -197,6 +198,15 @@ remoteapplicationmode:i:1
 remoteapplicationname:s:Notepad
 remoteapplicationprogram:s:C:\Windows\System32\notepad.exe
 ```
+
+### Method 3: Coheremote's Built-in RemoteApp Conversion
+
+Convert a regular RDP connection to RemoteApp mode directly within Coheremote, without manually editing the RDP file.
+
+1. Create an `.rdp` file using Method 2
+2. Enable **RemoteApp Conversion** in Coheremote's settings
+3. Enter the **App Name** (display name) and **Program Path** (Windows executable path)
+4. RemoteApp settings are automatically injected into the RDP file at build time
 
 ## Troubleshooting
 
@@ -278,6 +288,12 @@ Coheremote is a SwiftUI macOS project. To build:
 | `ConnectivityChecker.swift` | Network connectivity checks |
 | `WakeOnLANManager.swift` | Wake-on-LAN packet sending |
 
+## Security Notes
+
+- **Password Storage**: VM encryption passwords and Windows passwords are stored in the **macOS Keychain** (not in UserDefaults)
+- **vmrun Limitation**: VMware Fusion's `vmrun` command only accepts passwords via process arguments (`-vp`, `-gp`). This means passwords may be visible to other processes running under the same user via `ps`. This is a known vmrun limitation — exercise caution in shared environments
+- **App Name Sanitization**: Dangerous filesystem characters (`/`, `\`, `:`, `*`, `?`, `"`, `<`, `>`, `|`) are automatically stripped from app names at build time
+
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.
@@ -286,7 +302,7 @@ MIT License. See [LICENSE](LICENSE) for details.
 
 - Generated wrapper apps are for **personal use**
 - Ensure compliance with Microsoft and VMware licensing terms
-- Windows passwords for the App Launcher feature are stored securely in the macOS Keychain
+- Passwords are stored securely in the macOS Keychain
 
 ## Credits
 

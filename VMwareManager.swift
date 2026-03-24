@@ -63,9 +63,12 @@ class VMwareManager {
     }
     
     /// VMを起動
+    /// NOTE: vmrun does not support passing passwords via stdin or file.
+    /// The -vp flag exposes the password in process arguments visible to
+    /// other processes under the same user. This is a known vmrun limitation.
     func startVM(vmxPath: String, encryptionPassword: String? = nil) async -> Bool {
         var arguments = ["-T", "fusion"]
-        
+
         if let password = encryptionPassword, !password.isEmpty {
             arguments.append(contentsOf: ["-vp", password])
         }

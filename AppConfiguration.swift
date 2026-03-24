@@ -7,6 +7,7 @@
 
 import Foundation
 import Combine
+import Security
 
 enum ConnectionMode: String, Codable, CaseIterable, Identifiable {
     case localVM = "localVM"
@@ -56,17 +57,25 @@ struct AppConfiguration: Codable {
         self.remoteAppProgram = ""
     }
 
+    // パスワードフィールドはKeychainで管理するためCodable対象外
+    enum CodingKeys: String, CodingKey {
+        case connectionMode, rdpFilePath, iconImagePath, vmPath
+        case hostName, macAddress, windowsUsername
+        case closeVMOnExit, shutdownOnExit, overlayIcon, enableStartMenu
+        case enableRemoteApp, remoteAppName, remoteAppProgram
+    }
+
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         connectionMode = try container.decodeIfPresent(ConnectionMode.self, forKey: .connectionMode) ?? .localVM
         rdpFilePath = try container.decode(String.self, forKey: .rdpFilePath)
         iconImagePath = try container.decode(String.self, forKey: .iconImagePath)
         vmPath = try container.decode(String.self, forKey: .vmPath)
-        vmEncryptionPassword = try container.decode(String.self, forKey: .vmEncryptionPassword)
+        vmEncryptionPassword = ""
         hostName = try container.decodeIfPresent(String.self, forKey: .hostName) ?? ""
         macAddress = try container.decodeIfPresent(String.self, forKey: .macAddress) ?? ""
         windowsUsername = try container.decode(String.self, forKey: .windowsUsername)
-        windowsPassword = try container.decodeIfPresent(String.self, forKey: .windowsPassword) ?? ""
+        windowsPassword = ""
         closeVMOnExit = try container.decode(Bool.self, forKey: .closeVMOnExit)
         shutdownOnExit = try container.decode(Bool.self, forKey: .shutdownOnExit)
         overlayIcon = try container.decodeIfPresent(Bool.self, forKey: .overlayIcon) ?? false
@@ -79,26 +88,75 @@ struct AppConfiguration: Codable {
 
 class ConfigurationManager: ObservableObject {
     @Published var config = AppConfiguration()
-    
+
     private let userDefaultsKey = "lastUsedConfiguration"
-    
+    private let keychainService = "Coheremote-Builder"
+
     init() {
         loadConfiguration()
     }
-    
+
     func saveConfiguration() {
-        if let encoded = try? JSONEncoder().encode(config) {
+        do {
+            let encoded = try JSONEncoder().encode(config)
             UserDefaults.standard.set(encoded, forKey: userDefaultsKey)
+        } catch {
+            print("[Coheremote] Failed to save configuration: \(error)")
         }
+        savePasswordToKeychain(account: "vmEncryption", password: config.vmEncryptionPassword)
+        savePasswordToKeychain(account: "windowsPassword", password: config.windowsPassword)
     }
-    
+
     func loadConfiguration() {
-        if let data = UserDefaults.standard.data(forKey: userDefaultsKey),
-           let decoded = try? JSONDecoder().decode(AppConfiguration.self, from: data) {
-            config = decoded
+        guard let data = UserDefaults.standard.data(forKey: userDefaultsKey) else { return }
+        do {
+            config = try JSONDecoder().decode(AppConfiguration.self, from: data)
+        } catch {
+            print("[Coheremote] Failed to load configuration: \(error)")
+        }
+        config.vmEncryptionPassword = loadPasswordFromKeychain(account: "vmEncryption") ?? ""
+        config.windowsPassword = loadPasswordFromKeychain(account: "windowsPassword") ?? ""
+    }
+
+    // MARK: - Keychain
+
+    private func savePasswordToKeychain(account: String, password: String) {
+        let deleteQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: account
+        ]
+        SecItemDelete(deleteQuery as CFDictionary)
+
+        guard !password.isEmpty, let data = password.data(using: .utf8) else { return }
+        let addQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: account,
+            kSecValueData as String: data
+        ]
+        let status = SecItemAdd(addQuery as CFDictionary, nil)
+        if status != errSecSuccess {
+            print("[Coheremote] Failed to save password to Keychain (account: \(account), status: \(status))")
         }
     }
-    
+
+    private func loadPasswordFromKeychain(account: String) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true
+        ]
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data,
+              let password = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return password
+    }
+
     func isValid() -> Bool {
         let baseValid = !config.rdpFilePath.isEmpty &&
                         !config.vmPath.isEmpty &&

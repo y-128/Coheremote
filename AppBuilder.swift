@@ -11,13 +11,37 @@ import Security
 
 class AppBuilder {
 
+    /// ファイルシステム安全なアプリ名にサニタイズ
+    static func sanitizeAppName(_ name: String) -> String {
+        let forbidden = CharacterSet(charactersIn: "/\\:*?\"<>|\0")
+        var cleaned = name.unicodeScalars
+            .filter { !forbidden.contains($0) }
+            .map { String($0) }
+            .joined()
+            .trimmingCharacters(in: .whitespaces)
+        cleaned = cleaned.replacingOccurrences(of: "..", with: "")
+        if cleaned.hasPrefix(".") { cleaned = String(cleaned.dropFirst()) }
+        return cleaned.isEmpty ? "App" : cleaned
+    }
+
+    /// Bundle ID用に英数字とハイフンのみに制限
+    private static func bundleIDComponent(_ name: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-"))
+        let result = name.unicodeScalars
+            .filter { allowed.contains($0) }
+            .map { String($0) }
+            .joined()
+        return result.isEmpty ? "app" : result
+    }
+
     /// ラッパーアプリをビルド
     static func buildApp(
         appName: String,
         config: AppConfiguration,
         savePath: URL
     ) async throws {
-        let appBundle = savePath.appendingPathComponent("\(appName).app")
+        let safeName = sanitizeAppName(appName)
+        let appBundle = savePath.appendingPathComponent("\(safeName).app")
         let contentsDir = appBundle.appendingPathComponent("Contents")
         let macOSDir = contentsDir.appendingPathComponent("MacOS")
         let resourcesDir = contentsDir.appendingPathComponent("Resources")
@@ -28,7 +52,7 @@ class AppBuilder {
         try fileManager.createDirectory(at: resourcesDir, withIntermediateDirectories: true)
 
         // Info.plistを作成
-        try createInfoPlist(appName: appName, at: contentsDir)
+        try createInfoPlist(appName: safeName, at: contentsDir)
 
         // アイコンを変換してコピー
         if !config.iconImagePath.isEmpty {
@@ -58,7 +82,7 @@ class AppBuilder {
         // VM暗号化パスワードをKeychainに保存
         if !config.vmEncryptionPassword.isEmpty {
             try savePasswordToKeychain(
-                appName: appName,
+                appName: safeName,
                 account: "vmEncryption",
                 password: config.vmEncryptionPassword
             )
@@ -67,7 +91,7 @@ class AppBuilder {
         // WindowsパスワードをKeychainに保存
         if !config.windowsPassword.isEmpty {
             try savePasswordToKeychain(
-                appName: appName,
+                appName: safeName,
                 account: "windowsPassword",
                 password: config.windowsPassword
             )
@@ -75,7 +99,7 @@ class AppBuilder {
 
         // ラッパーアプリのバイナリを生成
         try createWrapperBinary(
-            appName: appName,
+            appName: safeName,
             config: config,
             at: macOSDir
         )
@@ -112,7 +136,7 @@ class AppBuilder {
     private static func createInfoPlist(appName: String, at contentsDir: URL) throws {
         let plist: [String: Any] = [
             "CFBundleExecutable": appName,
-            "CFBundleIdentifier": "com.coheremote.\(appName.replacingOccurrences(of: " ", with: ""))",
+            "CFBundleIdentifier": "com.coheremote.\(bundleIDComponent(appName))",
             "CFBundleName": appName,
             "CFBundleDisplayName": appName,
             "CFBundleVersion": "1.0",
