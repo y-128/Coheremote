@@ -35,12 +35,17 @@ jobs:
           MARKETING_VERSION=${{ steps.version.outputs.VERSION }} \
           CODE_SIGN_IDENTITY="-" \
           CODE_SIGNING_REQUIRED=NO \
-          CODE_SIGNING_ALLOWED=NO
+          CODE_SIGNING_ALLOWED=YES
+
+    - name: Ad-hoc sign
+      run: |
+        APP_PATH=$(find build -name "Coheremote.app" -type d | head -1)
+        codesign --force --deep --sign - "$APP_PATH"
+        codesign --verify "$APP_PATH"
 
     - name: Package app
       run: |
         APP_PATH=$(find build -name "Coheremote.app" -type d | head -1)
-        xattr -cr "$APP_PATH"
         ditto -c -k --keepParent "$APP_PATH" "Coheremote-v${{ steps.version.outputs.VERSION }}.zip"
 
     - name: Create Release
